@@ -1,0 +1,1071 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Salary Calculator</title>
+<!-- Firebase SDK -->
+<script type="module">
+  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+  import { getFirestore, doc, setDoc, getDoc, collection, getDocs } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+
+  // ── PASTE YOUR FIREBASE CONFIG BELOW ──────────────────────────────────────
+  // Go to console.firebase.google.com → your project → Project Settings → Your apps
+  // Copy the firebaseConfig object and replace these values.
+  const firebaseConfig = {
+    apiKey:            "AIzaSyCaz5JzOfYf8aZk74qT1Eq8JtWB056dNiU",
+    authDomain:        "santosh-salary.firebaseapp.com",
+    projectId:         "santosh-salary",
+    storageBucket:     "santosh-salary.firebasestorage.app",
+    messagingSenderId: "1049729118510",
+    appId:             "1:1049729118510:web:d27c1e34f28cce027e8abf"
+  };
+  // ── END CONFIG ─────────────────────────────────────────────────────────────
+
+  const USER_DOC = 'santosh';   // document name inside each collection
+
+  let db = null;
+  let fbReady = false;
+
+  function setFbStatus(msg, ok) {
+    const el = document.getElementById('fb-status');
+    if(!el) return;
+    el.textContent = msg;
+    el.style.color = ok ? '#6ee7b7' : '#fca5a5';
+  }
+
+  async function fbInit() {
+    if(firebaseConfig.apiKey === 'AIzaSyCaz5JzOfYf8aZk74qT1Eq8JtWB056dNiU') {
+      setFbStatus('Cloud sync: not configured', false);
+      return;
+    }
+    try {
+      const app = initializeApp(firebaseConfig);
+      db = getFirestore(app);
+      fbReady = true;
+      setFbStatus('Cloud sync: connected', true);
+      await fbLoad();
+    } catch(e) {
+      setFbStatus('Cloud sync: error', false);
+      console.error('Firebase init error', e);
+    }
+  }
+
+  // ── LOAD from Firestore on startup (overrides localStorage if newer) ──────
+  async function fbLoad() {
+    if(!fbReady) return;
+    try {
+      const [recSnap, setSnap, invSnap, mapSnap] = await Promise.all([
+        getDoc(doc(db, 'salary_records', USER_DOC)),
+        getDoc(doc(db, 'salary_settings', USER_DOC)),
+        getDoc(doc(db, 'salary_invno', USER_DOC)),
+        getDoc(doc(db, 'salary_invmap', USER_DOC))
+      ]);
+      if(recSnap.exists()) {
+        const remote = recSnap.data();
+        localStorage.setItem('salary_calc_records_v1', JSON.stringify(remote.records || []));
+      }
+      if(setSnap.exists()) {
+        const remote = setSnap.data();
+        localStorage.setItem('salary_calc_settings_v1', JSON.stringify(remote.settings || {}));
+      }
+      if(invSnap.exists()) {
+        const remote = invSnap.data();
+        if(remote.invNo) localStorage.setItem('salary_calc_invno_v1', remote.invNo);
+      }
+      if(mapSnap.exists()) {
+        const remote = mapSnap.data();
+        localStorage.setItem('salary_invmap_v1', JSON.stringify(remote.map || {}));
+      }
+      // Re-render after cloud data loaded
+      if(typeof loadSettingsToForm === 'function') loadSettingsToForm();
+      if(typeof renderRecords === 'function') renderRecords();
+      if(typeof renderAnnual === 'function') renderAnnual();
+      setFbStatus('Cloud sync: loaded', true);
+    } catch(e) {
+      setFbStatus('Cloud sync: load error', false);
+      console.error('fbLoad error', e);
+    }
+  }
+
+  // ── PUSH to Firestore (called after every local save) ────────────────────
+  window.fbPush = async function() {
+    if(!fbReady) return;
+    try {
+      const records  = JSON.parse(localStorage.getItem('salary_calc_records_v1') || '[]');
+      const settings = JSON.parse(localStorage.getItem('salary_calc_settings_v1') || '{}');
+      const invNo    = parseInt(localStorage.getItem('salary_calc_invno_v1')) || 1;
+      const invMap   = JSON.parse(localStorage.getItem('salary_invmap_v1') || '{}');
+      await Promise.all([
+        setDoc(doc(db, 'salary_records',  USER_DOC), { records,  updatedAt: new Date().toISOString() }),
+        setDoc(doc(db, 'salary_settings', USER_DOC), { settings, updatedAt: new Date().toISOString() }),
+        setDoc(doc(db, 'salary_invno',    USER_DOC), { invNo,    updatedAt: new Date().toISOString() }),
+        setDoc(doc(db, 'salary_invmap',   USER_DOC), { map: invMap, updatedAt: new Date().toISOString() })
+      ]);
+      setFbStatus('Cloud sync: saved ✓', true);
+    } catch(e) {
+      setFbStatus('Cloud sync: save error', false);
+      console.error('fbPush error', e);
+    }
+  };
+
+  // Start Firebase after DOM ready
+  if(document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', fbInit);
+  } else {
+    fbInit();
+  }
+</script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --ink: #1a1f2e; --ink-light: #4a5168; --paper: #f7f8fa;
+    --white: #ffffff; --rule: #e2e5ec; --accent: #2563eb;
+    --accent-soft: #eff4ff; --green: #15803d; --green-soft: #f0fdf4;
+    --red: #b91c1c; --red-soft: #fef2f2; --amber: #b45309;
+    --amber-soft: #fffbeb; --mono: 'Courier New', monospace;
+  }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--paper); color: var(--ink); min-height: 100vh; font-size: 14px; line-height: 1.5; }
+  header { background: var(--ink); color: var(--white); padding: 18px 24px; display: flex; align-items: baseline; gap: 12px; }
+  header h1 { font-size: 18px; font-weight: 700; letter-spacing: -0.3px; }
+  header span { font-size: 12px; color: #94a3b8; letter-spacing: 0.5px; }
+  .tabs { background: var(--white); border-bottom: 1px solid var(--rule); display: flex; gap: 0; padding: 0 24px; overflow-x: auto; }
+  .tab { padding: 12px 20px; font-size: 13px; font-weight: 500; color: var(--ink-light); cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.15s; background: none; border-top: none; border-left: none; border-right: none; white-space: nowrap; }
+  .tab:hover { color: var(--accent); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .container { max-width: 900px; margin: 0 auto; padding: 24px; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .card { background: var(--white); border: 1px solid var(--rule); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+  .card-title { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: var(--ink-light); margin-bottom: 16px; padding-bottom: 10px; border-bottom: 1px solid var(--rule); }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .form-row.three { grid-template-columns: 1fr 1fr 1fr; }
+  label { display: block; font-size: 12px; font-weight: 500; color: var(--ink-light); margin-bottom: 5px; }
+  input, select, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--rule); border-radius: 5px; font-size: 13px; color: var(--ink); background: var(--white); outline: none; transition: border-color 0.15s; }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+  input[type="number"] { font-family: var(--mono); }
+  .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+  .result-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-radius: 5px; background: var(--paper); }
+  .result-row.deduct { background: var(--red-soft); }
+  .result-row.net { background: var(--green-soft); grid-column: 1/-1; }
+  .result-row.tds { background: var(--amber-soft); }
+  .result-label { font-size: 12px; color: var(--ink-light); font-weight: 500; }
+  .result-val { font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--ink); }
+  .result-val.neg { color: var(--red); }
+  .result-val.pos { color: var(--green); }
+  .result-val.tds-color { color: var(--amber); }
+  .btn { padding: 8px 18px; border-radius: 5px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; transition: opacity 0.15s; }
+  .btn:hover { opacity: 0.85; }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-green { background: var(--green); color: white; }
+  .btn-sm { padding: 5px 12px; font-size: 12px; }
+  .btn-danger { background: var(--red); color: white; }
+  .btn-ghost { background: none; border: 1px solid var(--rule); color: var(--ink-light); }
+  .btn-purple { background: #7c3aed; color: white; }
+  .btn-row { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 8px 10px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink-light); border-bottom: 2px solid var(--rule); }
+  td { padding: 9px 10px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--paper); }
+  td.num { font-family: var(--mono); text-align: right; }
+  td.del-cell { text-align: center; }
+  .other-item { display: grid; grid-template-columns: 130px 1fr 120px auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .year-summary { background: var(--ink); color: white; border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+  .year-summary h2 { font-size: 22px; font-family: var(--mono); margin-bottom: 4px; }
+  .year-summary p { font-size: 12px; color: #94a3b8; }
+  .year-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 16px; }
+  .stat-box { background: rgba(255,255,255,0.07); border-radius: 6px; padding: 12px; }
+  .stat-box .sl { font-size: 11px; color: #94a3b8; margin-bottom: 4px; }
+  .stat-box .sv { font-size: 16px; font-family: var(--mono); font-weight: 700; }
+  .month-badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; background: var(--accent-soft); color: var(--accent); }
+  .empty-state { text-align: center; padding: 40px 20px; color: var(--ink-light); }
+  .empty-state .icon { font-size: 32px; margin-bottom: 10px; }
+  .alert { padding: 10px 14px; border-radius: 5px; font-size: 13px; margin-bottom: 12px; }
+  .alert-success { background: var(--green-soft); color: var(--green); border: 1px solid #bbf7d0; }
+  .alert-error { background: var(--red-soft); color: var(--red); border: 1px solid #fecaca; }
+  select.year-sel { width: auto; display: inline-block; padding: 6px 10px; font-size: 13px; }
+  .section-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+  .tds-info { font-size: 11px; color: var(--ink-light); margin-top: 6px; font-style: italic; }
+
+  /* Invoice Preview */
+  #invoice-modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:1000; overflow-y:auto; padding:20px; }
+  #invoice-modal.open { display:flex; align-items:flex-start; justify-content:center; }
+  .inv-wrap { background:white; border-radius:8px; width:100%; max-width:750px; overflow:hidden; }
+  .inv-actions { background:#f1f5f9; padding:12px 20px; display:flex; gap:10px; align-items:center; }
+  .inv-actions span { font-size:13px; color:var(--ink-light); margin-right:auto; }
+
+  /* Invoice print area */
+  #invoice-print {
+    padding: 40px 48px;
+    font-family: 'Times New Roman', serif;
+    font-size: 13px;
+    color: #000;
+    line-height: 1.6;
+    min-height: 900px;
+  }
+  .inv-header-block { margin-bottom: 24px; }
+  .inv-name { font-size: 18px; font-weight: bold; margin-bottom: 2px; }
+  .inv-addr { font-size: 12px; line-height: 1.8; }
+  .inv-meta-row { display: flex; justify-content: space-between; margin-bottom: 20px; }
+  .inv-meta-right { text-align: right; font-size: 12px; line-height: 2; }
+  .inv-to-block { margin-bottom: 20px; }
+  .inv-to-block .to-label { font-size: 12px; }
+  .inv-to-block .to-name { font-size: 14px; font-weight: bold; }
+  .inv-to-block .to-addr { font-size: 12px; line-height: 1.8; }
+  .inv-table { width: 100%; border-collapse: collapse; margin: 20px 0; border: 1px solid #000; }
+  .inv-table th { border: 1px solid #000; padding: 7px 10px; font-size: 12px; background: #f5f5f5; text-align: left; }
+  .inv-table td { border: 1px solid #000; padding: 8px 10px; font-size: 12px; vertical-align: middle; text-align: center; }
+  .inv-table td.desc { text-align: center; vertical-align: middle; }
+  .inv-table td.right { text-align: right; font-family: 'Courier New', monospace; }
+  .inv-table td.left { text-align: left; }
+  .inv-table tr.total-row td { font-weight: bold; background: #fafafa; }
+  .inv-amount-words { font-size: 12px; margin: 10px 0; font-style: italic; }
+  .inv-footer { display: flex; justify-content: space-between; margin-top: 40px; font-size: 12px; }
+  .inv-pan { margin-top: 8px; font-size: 12px; }
+  .inv-sign { text-align: right; }
+  .inv-sign-line { border-top: 1px solid #000; width: 200px; margin-left: auto; margin-top: 40px; padding-top: 4px; font-size: 12px; }
+
+  @media print {
+    body > *:not(#invoice-modal) { display: none !important; }
+    #invoice-modal { display:block !important; position:static; background:none; padding:0; }
+    .inv-wrap { border-radius:0; box-shadow:none; }
+    .inv-actions { display:none !important; }
+    #invoice-print { padding:20px 30px; }
+  }
+
+  @media (max-width: 600px) {
+    .form-row, .form-row.three { grid-template-columns: 1fr; }
+    .result-grid { grid-template-columns: 1fr; }
+    .result-row.net { grid-column: 1; }
+    .year-stats { grid-template-columns: 1fr 1fr; }
+    .other-item { grid-template-columns: 100px 1fr 90px auto; }
+    #invoice-print { padding: 20px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Salary Calculator</h1>
+  <span>Monthly Computation + Annual Tracker + Invoice</span>
+  <span id="fb-status" style="font-size:11px;color:#94a3b8;margin-left:auto;">Cloud sync: initialising…</span>
+</header>
+
+<div class="tabs">
+  <button class="tab active" onclick="switchTab('compute', this)">Compute Salary</button>
+  <button class="tab" onclick="switchTab('records', this)">Monthly Records</button>
+  <button class="tab" onclick="switchTab('annual', this)">Annual Summary</button>
+  <button class="tab" onclick="switchTab('settings', this)">Settings</button>
+</div>
+
+<div class="container">
+  <div id="alert-area"></div>
+
+  <!-- COMPUTE PANEL -->
+  <div id="panel-compute" class="panel active">
+    <div class="card">
+      <div class="card-title">Salary Details</div>
+      <div class="form-row">
+        <div>
+          <label>Month</label>
+          <select id="sel-month">
+            <option value="1">January</option><option value="2">February</option>
+            <option value="3">March</option><option value="4">April</option>
+            <option value="5">May</option><option value="6">June</option>
+            <option value="7">July</option><option value="8">August</option>
+            <option value="9">September</option><option value="10">October</option>
+            <option value="11">November</option><option value="12">December</option>
+          </select>
+        </div>
+        <div>
+          <label>Year</label>
+          <input type="number" id="inp-year" value="2026" min="2020" max="2040">
+        </div>
+      </div>
+      <div class="form-row">
+        <div>
+          <label>Gross Monthly Salary (Rs.)</label>
+          <input type="number" id="inp-salary" placeholder="e.g. 100000" min="0">
+        </div>
+        <div>
+          <label>Working Days in Month</label>
+          <input type="number" id="inp-working" placeholder="e.g. 26" min="1" max="31">
+        </div>
+      </div>
+      <div class="form-row">
+        <div>
+          <label>Days Absent</label>
+          <input type="number" id="inp-absent" value="0" min="0">
+        </div>
+        <div>
+          <label>TDS Rate (%)</label>
+          <input type="number" id="inp-tds" value="10" min="0" max="100" step="0.5">
+        </div>
+      </div>
+      <p class="tds-info">TDS applied on salary after absent deduction.</p>
+    </div>
+
+    <div class="card">
+      <div class="section-head">
+        <div class="card-title" style="margin:0;border:none;padding:0;">Other Income / Receipts</div>
+        <button class="btn btn-ghost btn-sm" onclick="addOtherRow()">+ Add</button>
+      </div>
+      <div id="other-items"></div>
+      <p id="other-empty" style="font-size:12px;color:var(--ink-light);">No other income added.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Calculation Result</div>
+      <div class="result-grid" id="result-area">
+        <div class="result-row"><span class="result-label">Gross Salary</span><span class="result-val" id="r-gross">--</span></div>
+        <div class="result-row deduct"><span class="result-label">Absent Deduction</span><span class="result-val neg" id="r-absent">--</span></div>
+        <div class="result-row"><span class="result-label">Salary After Absent</span><span class="result-val" id="r-after-absent">--</span></div>
+        <div class="result-row tds"><span class="result-label">TDS Deducted</span><span class="result-val tds-color" id="r-tds">--</span></div>
+        <div class="result-row"><span class="result-label">Net Salary (after TDS)</span><span class="result-val" id="r-net-salary">--</span></div>
+        <div class="result-row"><span class="result-label">Other Income Total</span><span class="result-val pos" id="r-other">--</span></div>
+        <div class="result-row net">
+          <span class="result-label" style="font-size:14px;font-weight:700;color:var(--ink);">Total Net Receipt</span>
+          <span class="result-val pos" id="r-total" style="font-size:18px;">--</span>
+        </div>
+      </div>
+      <div id="autosave-bar" style="display:none;margin-top:10px;padding:7px 12px;border-radius:5px;font-size:12px;background:var(--green-soft);color:var(--green);border:1px solid #bbf7d0;">
+        &#10003; Auto-saved
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="calculate()">Calculate</button>
+        <button class="btn btn-green" onclick="saveRecord()">Save This Month</button>
+        <button class="btn btn-purple" onclick="openInvoice()">Generate Invoice (PDF)</button>
+        <button class="btn btn-ghost" onclick="clearForm()">Clear</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- RECORDS PANEL -->
+  <div id="panel-records" class="panel">
+    <div class="card">
+      <div class="section-head">
+        <div class="card-title" style="margin:0;border:none;padding:0;">Saved Monthly Records</div>
+        <select class="year-sel" id="rec-year-filter" onchange="renderRecords()"></select>
+      </div>
+      <div id="records-table-wrap"></div>
+    </div>
+  </div>
+
+  <!-- ANNUAL PANEL -->
+  <div id="panel-annual" class="panel">
+    <div class="section-head" style="margin-bottom:12px;">
+      <span style="font-weight:600;font-size:14px;">Financial Year</span>
+      <select class="year-sel" id="ann-year-filter" onchange="renderAnnual()"></select>
+    </div>
+    <div id="annual-content"></div>
+  </div>
+
+  <!-- SETTINGS PANEL -->
+  <div id="panel-settings" class="panel">
+    <div class="card">
+      <div class="card-title">Your Profile (for Invoice)</div>
+      <div class="form-row">
+        <div>
+          <label>Your Full Name</label>
+          <input type="text" id="set-name" placeholder="Advocate Name">
+        </div>
+        <div>
+          <label>PAN Number</label>
+          <input type="text" id="set-pan" placeholder="e.g. BHJPP4742H" style="text-transform:uppercase;">
+        </div>
+      </div>
+      <div style="margin-bottom:12px;">
+        <label>Your Address (for Invoice header)</label>
+        <textarea id="set-addr" rows="3" placeholder="Office address, City, Pin"></textarea>
+      </div>
+      <div class="form-row">
+        <div>
+          <label>Vendor Code</label>
+          <input type="text" id="set-vendor" placeholder="e.g. 307331">
+        </div>
+        <div>
+          <label>Date of Joining</label>
+          <input type="date" id="set-doj">
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Invoice Recipient (Default)</div>
+      <div class="form-row">
+        <div>
+          <label>Company Name</label>
+          <input type="text" id="set-to-name" value="Kolte-Patil Developers Ltd." placeholder="Company name">
+        </div>
+        <div>
+          <label>GSTIN</label>
+          <input type="text" id="set-to-gstin" value="27AAACK7310G1ZT" placeholder="GSTIN">
+        </div>
+      </div>
+      <div style="margin-bottom:12px;">
+        <label>Recipient Address</label>
+        <textarea id="set-to-addr" rows="3">2nd Floor, City Point, Dhole Patil Rd., Pune 411001</textarea>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Invoice Settings</div>
+      <div class="form-row">
+        <div>
+          <label>Next Invoice Number</label>
+          <input type="number" id="set-inv-no" value="1" min="1">
+        </div>
+        <div>
+          <label>Invoice Description</label>
+          <input type="text" id="set-inv-desc" value="Legal Retainer" placeholder="e.g. Legal Retainer / Consultancy">
+        </div>
+      </div>
+      <p style="font-size:11px;color:var(--ink-light);margin-top:4px;">Set the correct next invoice number here, then click Save Settings. To also fix a specific month that already has a wrong number assigned, use the Reset button below.</p>
+      <div style="margin-top:14px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <div>
+          <label>Reset Invoice No. for a specific month</label>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <select id="fix-month" style="width:auto;padding:7px 10px;font-size:13px;">
+              <option value="1">January</option><option value="2">February</option>
+              <option value="3">March</option><option value="4">April</option>
+              <option value="5">May</option><option value="6">June</option>
+              <option value="7">July</option><option value="8">August</option>
+              <option value="9">September</option><option value="10">October</option>
+              <option value="11">November</option><option value="12">December</option>
+            </select>
+            <input type="number" id="fix-year" value="2026" min="2020" max="2040" style="width:80px;padding:7px 10px;font-size:13px;">
+            <input type="number" id="fix-invno" placeholder="New No." min="1" style="width:90px;padding:7px 10px;font-size:13px;">
+            <button class="btn btn-ghost btn-sm" onclick="fixMonthInvNo()">Apply</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Backup &amp; Restore Data</div>
+    <p style="font-size:12px;color:var(--ink-light);margin-bottom:14px;">
+      Records auto-save to this browser and, when Firebase is configured, sync to the cloud so any browser can access your data. Export JSON as a backup.
+    </p>
+    <div class="btn-row">
+      <button class="btn btn-green" onclick="exportData()">&#8595; Export All Data (JSON)</button>
+      <label class="btn btn-ghost" style="cursor:pointer;margin:0;">
+        &#8593; Import JSON File
+        <input type="file" id="import-file" accept=".json" onchange="importData(event)" style="display:none;">
+      </label>
+    </div>
+    <div id="import-status" style="margin-top:10px;font-size:12px;"></div>
+  </div>
+</div>
+
+<!-- INVOICE MODAL -->
+<div id="invoice-modal">
+  <div class="inv-wrap">
+    <div class="inv-actions">
+      <span>Invoice Preview</span>
+      <button class="btn btn-ghost btn-sm" onclick="closeInvoice()">Close</button>
+      <button class="btn btn-primary btn-sm" onclick="window.print()">Print / Save PDF</button>
+    </div>
+    <div id="invoice-print"></div>
+  </div>
+</div>
+
+<script>
+const MONTHS = ['January','February','March','April','May','June',
+                'July','August','September','October','November','December'];
+const DB_KEY   = 'salary_calc_records_v1';
+const SET_KEY  = 'salary_calc_settings_v1';
+const INVNO_KEY= 'salary_calc_invno_v1';
+
+// ---- DATA ----
+function getData() { try { return JSON.parse(localStorage.getItem(DB_KEY)) || []; } catch(e) { return []; } }
+function saveData(arr) { localStorage.setItem(DB_KEY, JSON.stringify(arr)); }
+
+function getSettings() {
+  try {
+    return JSON.parse(localStorage.getItem(SET_KEY)) || {
+      name: 'Santosh Keshav Patil', pan: 'BHJPP4742H', addr: 'B 702, Astonia Royale, Ambegaon Bk, Pune 411046', vendor: '307331',
+      doj: '2026-06-15', toName: 'Kolte-Patil Developers Ltd.',
+      toAddr: '2nd Floor, City Point, Dhole Patil Rd., Pune 411001',
+      toGstin: '27AAACK7310G1ZT', invDesc: 'Legal Retainer', invNo: 1
+    };
+  } catch(e) { return {}; }
+}
+function saveSettings() {
+  const s = {
+    name:    document.getElementById('set-name').value.trim(),
+    pan:     document.getElementById('set-pan').value.trim().toUpperCase(),
+    addr:    document.getElementById('set-addr').value.trim(),
+    vendor:  document.getElementById('set-vendor').value.trim(),
+    doj:     document.getElementById('set-doj').value,
+    toName:  document.getElementById('set-to-name').value.trim(),
+    toAddr:  document.getElementById('set-to-addr').value.trim(),
+    toGstin: document.getElementById('set-to-gstin').value.trim(),
+    invDesc: document.getElementById('set-inv-desc').value.trim(),
+    invNo:   parseInt(document.getElementById('set-inv-no').value) || 1
+  };
+  localStorage.setItem(SET_KEY, JSON.stringify(s));
+  showAlert('Settings saved.', 'success');
+  if(typeof window.fbPush === 'function') window.fbPush();
+}
+function fixMonthInvNo() {
+  const month  = parseInt(document.getElementById('fix-month').value);
+  const year   = parseInt(document.getElementById('fix-year').value);
+  const newNo  = parseInt(document.getElementById('fix-invno').value);
+  if(!newNo || newNo < 1) { showAlert('Enter a valid invoice number.', 'error'); return; }
+
+  // Fix in records
+  const data = getData();
+  const idx  = data.findIndex(r => r.month === month && r.year === year);
+  if(idx >= 0) { data[idx].invNo = newNo; saveData(data); }
+
+  // Fix in invMap
+  const invMap = JSON.parse(localStorage.getItem('salary_invmap_v1') || '{}');
+  invMap[year + '_' + month] = newNo;
+  localStorage.setItem('salary_invmap_v1', JSON.stringify(invMap));
+
+  const MONTHS_LOCAL = ['January','February','March','April','May','June',
+    'July','August','September','October','November','December'];
+  showAlert('Invoice No. for ' + MONTHS_LOCAL[month-1] + ' ' + year + ' set to ' + newNo + '.', 'success');
+}
+
+function loadSettingsToForm() {
+  const s = getSettings();
+  document.getElementById('set-name').value    = s.name    || '';
+  document.getElementById('set-pan').value     = s.pan     || 'BHJPP4742H';
+  document.getElementById('set-addr').value    = s.addr    || '';
+  document.getElementById('set-vendor').value  = s.vendor  || '307331';
+  document.getElementById('set-doj').value     = s.doj     || '';
+  document.getElementById('set-to-name').value = s.toName  || 'Kolte-Patil Developers Ltd.';
+  document.getElementById('set-to-addr').value = s.toAddr  || '2nd Floor, City Point, Dhole Patil Rd., Pune 411001';
+  document.getElementById('set-to-gstin').value= s.toGstin || '27AAACK7310G1ZT';
+  document.getElementById('set-inv-desc').value= s.invDesc || 'Legal Retainer';
+  document.getElementById('set-inv-no').value  = s.invNo   || 1;
+}
+
+// ---- FORMAT ----
+function fmt(n) { if(isNaN(n)||n===null) return '--'; return 'Rs. '+Number(n).toLocaleString('en-IN',{maximumFractionDigits:2,minimumFractionDigits:2}); }
+function fmtShort(n) { return Number(n).toLocaleString('en-IN',{maximumFractionDigits:2}); }
+function fmtNum(n) { return Number(n).toLocaleString('en-IN',{maximumFractionDigits:2,minimumFractionDigits:2}); }
+
+// ---- NUMBER TO WORDS ----
+function numToWords(n) {
+  const a = ['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine',
+    'Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen',
+    'Seventeen','Eighteen','Nineteen'];
+  const b = ['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
+  function inWords(num) {
+    if(num === 0) return '';
+    if(num < 20) return a[num] + ' ';
+    if(num < 100) return b[Math.floor(num/10)] + (num%10 ? ' ' + a[num%10] : '') + ' ';
+    if(num < 1000) return a[Math.floor(num/100)] + ' Hundred ' + inWords(num%100);
+    if(num < 100000) return inWords(Math.floor(num/1000)) + 'Thousand ' + inWords(num%1000);
+    if(num < 10000000) return inWords(Math.floor(num/100000)) + 'Lakh ' + inWords(num%100000);
+    return inWords(Math.floor(num/10000000)) + 'Crore ' + inWords(num%10000000);
+  }
+  const rounded = Math.round(Math.abs(n) * 100) / 100;
+  const intPart  = Math.floor(rounded);
+  const decPart  = Math.round((rounded - intPart) * 100);
+  let words = 'Rupees ' + inWords(intPart).trim();
+  if(decPart > 0) words += ' and ' + inWords(decPart).trim() + ' Paise';
+  words += ' Only';
+  return words;
+}
+
+// ---- DATE FORMAT ----
+function fmtDate(d) {
+  if(!d) return '';
+  const dt = new Date(d);
+  return dt.toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'});
+}
+function todayStr() {
+  return new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'});
+}
+
+// ---- TABS ----
+function switchTab(name, btn) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('panel-' + name).classList.add('active');
+  if(btn) btn.classList.add('active');
+  if(name === 'records') { populateYearFilter('rec-year-filter'); renderRecords(); }
+  if(name === 'annual')  { populateYearFilter('ann-year-filter'); renderAnnual(); }
+  if(name === 'settings') loadSettingsToForm();
+}
+
+// Init
+(function() {
+  const now = new Date();
+  document.getElementById('sel-month').value = now.getMonth() + 1;
+  document.getElementById('inp-year').value = now.getFullYear();
+  attachAutoSave();
+})();
+
+// ---- OTHER ROWS ----
+let otherRows = [];
+let otherIdCounter = 0;
+function addOtherRow() {
+  const id = ++otherIdCounter;
+  otherRows.push({ id });
+  renderOtherRows();
+}
+function removeOtherRow(id) {
+  otherRows = otherRows.filter(r => r.id !== id);
+  renderOtherRows();
+  scheduleAutoSave();
+}
+function renderOtherRows() {
+  const wrap  = document.getElementById('other-items');
+  const empty = document.getElementById('other-empty');
+  if(!otherRows.length) { wrap.innerHTML = ''; empty.style.display = ''; return; }
+  empty.style.display = 'none';
+  wrap.innerHTML = otherRows.map(r => `
+    <div class="other-item">
+      <input type="date" id="odate-${r.id}" value="${r.date||''}" style="font-size:12px;padding:6px 8px;">
+      <input type="text" id="opart-${r.id}" placeholder="Particulars" value="${r.particulars||''}" oninput="scheduleAutoSave()" style="font-size:13px;padding:6px 8px;">
+      <input type="number" id="oamt-${r.id}" placeholder="Amount" value="${r.amount||''}" oninput="scheduleAutoSave()" style="font-family:var(--mono);font-size:13px;padding:6px 8px;">
+      <button class="btn btn-danger btn-sm" onclick="removeOtherRow(${r.id})">x</button>
+    </div>
+  `).join('');
+}
+function collectOtherRows() {
+  return otherRows.map(r => ({
+    date: document.getElementById('odate-'+r.id)?.value || '',
+    particulars: document.getElementById('opart-'+r.id)?.value || '',
+    amount: parseFloat(document.getElementById('oamt-'+r.id)?.value) || 0
+  })).filter(r => r.amount > 0 || r.particulars);
+}
+
+// ---- CALCULATE ----
+function getCalcResult() {
+  const gross   = parseFloat(document.getElementById('inp-salary').value) || 0;
+  const working = parseFloat(document.getElementById('inp-working').value) || 0;
+  const absent  = parseFloat(document.getElementById('inp-absent').value) || 0;
+  const tdsRate = parseFloat(document.getElementById('inp-tds').value) || 0;
+  const others  = collectOtherRows();
+  const perDay       = working > 0 ? gross/working : 0;
+  const absentAmt    = perDay * absent;
+  const afterAbsent  = gross - absentAmt;
+  const tdsAmt       = afterAbsent * (tdsRate/100);
+  const netSalary    = afterAbsent - tdsAmt;
+  const otherTotal   = others.reduce((s,r) => s+r.amount, 0);
+  const total        = netSalary + otherTotal;
+  return { gross, working, absent, absentAmt, afterAbsent, tdsRate, tdsAmt, netSalary, otherTotal, total, others };
+}
+function calculate() {
+  const c = getCalcResult();
+  document.getElementById('r-gross').textContent        = fmt(c.gross);
+  document.getElementById('r-absent').textContent       = '- ' + fmt(c.absentAmt);
+  document.getElementById('r-after-absent').textContent = fmt(c.afterAbsent);
+  document.getElementById('r-tds').textContent          = '- ' + fmt(c.tdsAmt) + ' (' + c.tdsRate + '%)';
+  document.getElementById('r-net-salary').textContent   = fmt(c.netSalary);
+  document.getElementById('r-other').textContent        = fmt(c.otherTotal);
+  document.getElementById('r-total').textContent        = fmt(c.total);
+}
+
+// ---- ALERT ----
+function showAlert(msg, type) {
+  const a = document.getElementById('alert-area');
+  a.innerHTML = `<div class="alert alert-${type}">${msg}</div>`;
+  setTimeout(() => { a.innerHTML=''; }, 3000);
+}
+
+// ---- SAVE ----
+function buildRecord() {
+  const month  = parseInt(document.getElementById('sel-month').value);
+  const year   = parseInt(document.getElementById('inp-year').value);
+  const c      = getCalcResult();
+  return { month, year, gross:c.gross, working:c.working, absent:c.absent,
+    absentAmt:c.absentAmt, afterAbsent:c.afterAbsent, tdsRate:c.tdsRate,
+    tdsAmt:c.tdsAmt, netSalary:c.netSalary, otherTotal:c.otherTotal,
+    total:c.total, others:c.others, savedAt:new Date().toISOString() };
+}
+
+function persistRecord(record, silent) {
+  const data = getData();
+  const idx  = data.findIndex(r => r.month===record.month && r.year===record.year);
+  // preserve any previously assigned invNo
+  const prevInvNo = idx >= 0 ? data[idx].invNo : undefined;
+  if(idx >= 0) { data[idx] = record; if(prevInvNo) data[idx].invNo = prevInvNo; }
+  else { data.push(record); }
+  saveData(data);
+  if(!silent) showAlert(MONTHS[record.month-1]+' '+record.year+' saved.', 'success');
+  if(typeof window.fbPush === 'function') window.fbPush();
+}
+
+function saveRecord() {
+  const salary = parseFloat(document.getElementById('inp-salary').value);
+  if(!salary || salary <= 0) { showAlert('Please enter a valid salary amount.', 'error'); return; }
+  const record = buildRecord();
+  persistRecord(record, false);
+}
+
+// ---- AUTOSAVE ----
+let autoSaveTimer = null;
+function scheduleAutoSave() {
+  const salary = parseFloat(document.getElementById('inp-salary').value);
+  if(!salary || salary <= 0) return; // nothing to save yet
+  clearTimeout(autoSaveTimer);
+  autoSaveTimer = setTimeout(() => {
+    try {
+      calculate();
+      const record = buildRecord();
+      persistRecord(record, true);
+      const bar = document.getElementById('autosave-bar');
+      if(bar) {
+        bar.style.display = 'block';
+        bar.textContent = '\u2713 Auto-saved at ' + new Date().toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'});
+        clearTimeout(bar._hideTimer);
+        bar._hideTimer = setTimeout(() => { bar.style.display = 'none'; }, 4000);
+      }
+    } catch(e) { /* skip if form incomplete */ }
+  }, 1500);
+}
+
+function attachAutoSave() {
+  const fields = ['sel-month','inp-year','inp-salary','inp-working','inp-absent','inp-tds'];
+  fields.forEach(id => {
+    const el = document.getElementById(id);
+    if(el) el.addEventListener('input', scheduleAutoSave);
+    if(el) el.addEventListener('change', scheduleAutoSave);
+  });
+}
+function clearForm() {
+  ['inp-salary','inp-working'].forEach(id => document.getElementById(id).value='');
+  document.getElementById('inp-absent').value='0';
+  document.getElementById('inp-tds').value='10';
+  otherRows=[]; renderOtherRows();
+  ['r-gross','r-absent','r-after-absent','r-tds','r-net-salary','r-other','r-total']
+    .forEach(id => document.getElementById(id).textContent='--');
+}
+
+// ---- INVOICE ----
+function openInvoice() {
+  const month  = parseInt(document.getElementById('sel-month').value);
+  const year   = parseInt(document.getElementById('inp-year').value);
+  const salary = parseFloat(document.getElementById('inp-salary').value);
+  if(!salary || salary <= 0) { showAlert('Please enter salary and calculate first.', 'error'); return; }
+
+  calculate();
+  const c = getCalcResult();
+  const s = getSettings();
+
+  // Use saved invoice number if this month already has one, else assign next
+  const data = getData();
+  const existing = data.find(r => r.month === month && r.year === year);
+  const invMap = JSON.parse(localStorage.getItem('salary_invmap_v1') || '{}');
+  const mapKey = year + '_' + month;
+  let invNo;
+  let isNew = false;
+  if(existing && existing.invNo) {
+    invNo = existing.invNo;
+  } else if(invMap[mapKey]) {
+    invNo = invMap[mapKey];
+  } else {
+    invNo = parseInt(localStorage.getItem(INVNO_KEY)) || s.invNo || 1;
+    isNew = true;
+  }
+
+  const monthYear = MONTHS[month-1] + ' ' + year;
+  const invoiceDate = todayStr();
+  const dojFmt = s.doj ? fmtDate(s.doj) : '';
+
+  // Build description rows
+  let rows = '';
+  let rowNum = 1;
+
+  // Net after absent deduction, rounded up to nearest 10
+  const invoiceNetAmt = Math.ceil(c.afterAbsent / 10) * 10;
+
+  // Single consultancy fee row - clean description, centered
+  const desc = `Consultancy Charges for the month of <strong>${monthYear}</strong> (${s.invDesc || 'Legal Retainer'})`;
+
+  rows += `<tr>
+    <td>${rowNum++}</td>
+    <td class="desc">${desc}</td>
+    <td class="right">${fmtNum(invoiceNetAmt)}</td>
+  </tr>`;
+
+  // Other income rows
+  const others = collectOtherRows();
+  others.forEach(o => {
+    rows += `<tr>
+      <td>${rowNum++}</td>
+      <td class="desc">${o.particulars || 'Other Receipt'}${o.date ? ' <span style="font-size:11px;">('+o.date+')</span>' : ''}</td>
+      <td class="right">${fmtNum(o.amount)}</td>
+    </tr>`;
+  });
+
+  const invoiceTotalAmt = invoiceNetAmt + (others.reduce((s,r) => s+r.amount, 0));
+
+  const addrLines = (s.toAddr||'').split('\n').join('<br>');
+  const myAddrLines = (s.addr||'').split('\n').join('<br>');
+
+  const LOGO_SRC = 'data:image/jpeg;base64,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';
+
+  const html = `
+    <div class="inv-header-block" style="display:flex;align-items:flex-start;gap:18px;border-bottom:2px solid #000;padding-bottom:14px;margin-bottom:16px;">
+      <img src="${LOGO_SRC}" style="width:64px;height:64px;object-fit:contain;flex-shrink:0;" alt="Advocate Logo">
+      <div style="flex:1;">
+        <div class="inv-name" style="font-size:17px;font-weight:bold;letter-spacing:0.3px;">Santosh Keshav Patil</div>
+        <div style="font-size:12px;font-weight:600;color:#444;margin-bottom:3px;">Advocate &amp; Legal Consultant</div>
+        <div class="inv-addr" style="font-size:11.5px;line-height:1.7;">B 702, Astonia Royale, Ambegaon Bk, Pune 411046</div>
+      </div>
+      <div class="inv-meta-right" style="text-align:right;font-size:12px;line-height:2;flex-shrink:0;">
+        <strong>Date:</strong> ${invoiceDate}<br>
+        <strong>Invoice No.:</strong> ${invNo}<br>
+        <strong>Vendor Code:</strong> ${s.vendor || ''}
+      </div>
+    </div>
+    <div class="inv-to-block">
+      <div class="to-label">To,</div>
+      <div class="to-name">${s.toName || 'Kolte-Patil Developers Ltd.'}</div>
+      <div class="to-addr">${addrLines}</div>
+      ${s.toGstin ? '<div style="margin-top:4px;font-size:12px;"><strong>GSTIN:</strong> '+s.toGstin+'</div>' : ''}
+    </div>
+    <table class="inv-table">
+      <thead>
+        <tr>
+          <th style="width:35px;">Sr.</th>
+          <th>Description</th>
+          <th style="width:130px;text-align:right;">Amount (Rs.)</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+      <tfoot>
+        <tr class="total-row">
+          <td colspan="2" style="text-align:right;border-top:2px solid #000;border-bottom:2px solid #000;"><strong>Net Amount Payable</strong></td>
+          <td class="right" style="border-top:2px solid #000;border-bottom:2px solid #000;"><strong>${fmtNum(invoiceTotalAmt)}</strong></td>
+        </tr>
+      </tfoot>
+    </table>
+    <div style="border-top:1px solid #000;margin-top:0;"></div>
+    <div class="inv-amount-words" style="padding:8px 0 8px 0;"><strong>Amount in Words:</strong> ${numToWords(invoiceTotalAmt)}</div>
+    <div style="border-top:1px solid #000;margin-bottom:16px;"></div>
+    <div class="inv-footer">
+      <div class="inv-pan"><strong>PAN No.:</strong> ${s.pan || 'BHJPP4742H'}</div>
+      <div class="inv-sign">
+        <div class="inv-sign-line">Adv. Santosh Keshav Patil</div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('invoice-print').innerHTML = html;
+  document.getElementById('invoice-modal').classList.add('open');
+
+  // Only advance counter and save invNo if this is a new invoice
+  if(isNew) {
+    // Save invNo to record if it exists in storage
+    const allData = getData();
+    const idx = allData.findIndex(r => r.month === month && r.year === year);
+    if(idx >= 0) {
+      allData[idx].invNo = invNo;
+      saveData(allData);
+    }
+    // Also store in a month-keyed map so repeated prints of unsaved records stay stable
+    const invMap = JSON.parse(localStorage.getItem('salary_invmap_v1') || '{}');
+    invMap[year + '_' + month] = invNo;
+    localStorage.setItem('salary_invmap_v1', JSON.stringify(invMap));
+    // Advance counter for next new invoice
+    localStorage.setItem(INVNO_KEY, invNo + 1);
+    const sUpd = getSettings();
+    sUpd.invNo = invNo + 1;
+    localStorage.setItem(SET_KEY, JSON.stringify(sUpd));
+    if(document.getElementById('set-inv-no'))
+      document.getElementById('set-inv-no').value = invNo + 1;
+    if(typeof window.fbPush === 'function') window.fbPush();
+  }
+}
+function closeInvoice() {
+  document.getElementById('invoice-modal').classList.remove('open');
+}
+
+// ---- EXPORT / IMPORT ----
+function exportData() {
+  const payload = {
+    exported: new Date().toISOString(),
+    records:  getData(),
+    settings: getSettings(),
+    invNo:    parseInt(localStorage.getItem(INVNO_KEY)) || 1,
+    invMap:   JSON.parse(localStorage.getItem('salary_invmap_v1') || '{}')
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const date = new Date().toISOString().slice(0,10);
+  a.href     = url;
+  a.download = 'salary_data_' + date + '.json';
+  a.click();
+  URL.revokeObjectURL(url);
+  showAlert('Data exported successfully.', 'success');
+}
+
+function importData(event) {
+  const file = event.target.files[0];
+  if(!file) return;
+  const status = document.getElementById('import-status');
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const payload = JSON.parse(e.target.result);
+      if(!payload.records || !Array.isArray(payload.records)) {
+        status.innerHTML = '<span style="color:var(--red);">Invalid file. Please export from this app first.</span>';
+        return;
+      }
+      saveData(payload.records);
+      if(payload.settings) localStorage.setItem(SET_KEY, JSON.stringify(payload.settings));
+      if(payload.invNo)    localStorage.setItem(INVNO_KEY, payload.invNo);
+      if(payload.invMap)   localStorage.setItem('salary_invmap_v1', JSON.stringify(payload.invMap));
+      loadSettingsToForm();
+      const count = payload.records.length;
+      status.innerHTML = '<span style="color:var(--green);">Imported ' + count + ' record' + (count !== 1 ? 's' : '') + ' successfully. All data restored.</span>';
+      showAlert('Import successful. ' + count + ' records loaded.', 'success');
+      if(typeof window.fbPush === 'function') window.fbPush();
+    } catch(err) {
+      status.innerHTML = '<span style="color:var(--red);">Could not read file. Make sure it is a valid JSON export.</span>';
+    }
+    event.target.value = '';
+  };
+  reader.readAsText(file);
+}
+
+// ---- YEAR FILTER ----
+function getYears() {
+  const data  = getData();
+  const years = [...new Set(data.map(r=>r.year))].sort((a,b)=>b-a);
+  if(!years.length) years.push(new Date().getFullYear());
+  return years;
+}
+function populateYearFilter(selId) {
+  const sel  = document.getElementById(selId);
+  const cur  = sel.value;
+  const years= getYears();
+  sel.innerHTML = years.map(y=>`<option value="${y}">${y}</option>`).join('');
+  if(cur && years.includes(parseInt(cur))) sel.value = cur;
+}
+
+// ---- RECORDS ----
+function renderRecords() {
+  const year = parseInt(document.getElementById('rec-year-filter').value);
+  const data = getData().filter(r=>r.year===year).sort((a,b)=>a.month-b.month);
+  const wrap = document.getElementById('records-table-wrap');
+  if(!data.length) { wrap.innerHTML=`<div class="empty-state"><div class="icon">📋</div><p>No records for ${year}.</p></div>`; return; }
+  wrap.innerHTML = `<table>
+    <thead><tr>
+      <th>Month</th><th style="text-align:right;">Gross</th>
+      <th style="text-align:right;">Absent</th><th style="text-align:right;">TDS</th>
+      <th style="text-align:right;">Net Salary</th><th style="text-align:right;">Other</th>
+      <th style="text-align:right;">Total</th><th style="text-align:center;">Action</th>
+    </tr></thead>
+    <tbody>${data.map(r=>`<tr>
+      <td><span class="month-badge">${MONTHS[r.month-1]}</span></td>
+      <td class="num">${fmtShort(r.gross)}</td>
+      <td class="num" style="color:var(--red);">${r.absentAmt>0?fmtShort(r.absentAmt):'-'}</td>
+      <td class="num" style="color:var(--amber);">${fmtShort(r.tdsAmt)}</td>
+      <td class="num">${fmtShort(r.netSalary)}</td>
+      <td class="num" style="color:var(--green);">${r.otherTotal>0?fmtShort(r.otherTotal):'-'}</td>
+      <td class="num" style="font-weight:700;">${fmtShort(r.total)}</td>
+      <td class="del-cell">
+        <button class="btn btn-ghost btn-sm" onclick="loadRecord(${r.month},${r.year})">Load</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteRecord(${r.month},${r.year})">Del</button>
+      </td>
+    </tr>`).join('')}</tbody>
+  </table>`;
+}
+function deleteRecord(month, year) {
+  if(!confirm('Delete record for '+MONTHS[month-1]+' '+year+'?')) return;
+  saveData(getData().filter(r=>!(r.month===month&&r.year===year)));
+  renderRecords();
+}
+function loadRecord(month, year) {
+  const rec = getData().find(r=>r.month===month&&r.year===year);
+  if(!rec) return;
+  document.getElementById('sel-month').value = month;
+  document.getElementById('inp-year').value  = year;
+  document.getElementById('inp-salary').value  = rec.gross;
+  document.getElementById('inp-working').value = rec.working;
+  document.getElementById('inp-absent').value  = rec.absent;
+  document.getElementById('inp-tds').value     = rec.tdsRate;
+  otherRows=[]; otherIdCounter=0;
+  (rec.others||[]).forEach(o => { const id=++otherIdCounter; otherRows.push({id,...o}); });
+  renderOtherRows();
+  rec.others&&rec.others.forEach((o,i)=>{
+    const id=i+1;
+    const dEl=document.getElementById('odate-'+id);
+    const pEl=document.getElementById('opart-'+id);
+    const aEl=document.getElementById('oamt-'+id);
+    if(dEl) dEl.value=o.date; if(pEl) pEl.value=o.particulars; if(aEl) aEl.value=o.amount;
+  });
+  switchTab('compute', document.querySelector('.tab'));
+  calculate();
+}
+
+// ---- ANNUAL ----
+function renderAnnual() {
+  const year = parseInt(document.getElementById('ann-year-filter').value);
+  const data = getData().filter(r=>r.year===year).sort((a,b)=>a.month-b.month);
+  const wrap = document.getElementById('annual-content');
+  if(!data.length) { wrap.innerHTML=`<div class="empty-state"><div class="icon">📊</div><p>No records for ${year}.</p></div>`; return; }
+  const totGross  = data.reduce((s,r)=>s+r.gross,0);
+  const totAbsent = data.reduce((s,r)=>s+r.absentAmt,0);
+  const totTDS    = data.reduce((s,r)=>s+r.tdsAmt,0);
+  const totNetSal = data.reduce((s,r)=>s+r.netSalary,0);
+  const totOther  = data.reduce((s,r)=>s+r.otherTotal,0);
+  const totTotal  = data.reduce((s,r)=>s+r.total,0);
+  const allOthers = data.flatMap(r=>(r.others||[]).map(o=>({...o,month:r.month})));
+  const otherBreakdown = allOthers.length ? `<div class="card"><div class="card-title">Other Income Breakup</div>
+    <table><thead><tr><th>Month</th><th>Date</th><th>Particulars</th><th style="text-align:right;">Amount (Rs.)</th></tr></thead>
+    <tbody>${allOthers.map(o=>`<tr>
+      <td><span class="month-badge">${MONTHS[o.month-1]}</span></td>
+      <td>${o.date||'-'}</td><td>${o.particulars||'-'}</td>
+      <td class="num" style="color:var(--green);">${fmtShort(o.amount)}</td>
+    </tr>`).join('')}
+    <tr style="background:var(--green-soft);"><td colspan="3" style="font-weight:700;font-size:12px;">Total Other Income</td>
+    <td class="num" style="font-weight:700;color:var(--green);">${fmtShort(totOther)}</td></tr>
+    </tbody></table></div>` : '';
+  wrap.innerHTML = `
+    <div class="year-summary">
+      <h2>${fmt(totTotal)}</h2>
+      <p>Total Net Receipt for ${year} (${data.length} month${data.length>1?'s':''} recorded)</p>
+      <div class="year-stats">
+        <div class="stat-box"><div class="sl">Gross Salary</div><div class="sv">Rs. ${fmtShort(totGross)}</div></div>
+        <div class="stat-box"><div class="sl">Absent Deductions</div><div class="sv" style="color:#fca5a5;">Rs. ${fmtShort(totAbsent)}</div></div>
+        <div class="stat-box"><div class="sl">TDS Deducted</div><div class="sv" style="color:#fcd34d;">Rs. ${fmtShort(totTDS)}</div></div>
+        <div class="stat-box"><div class="sl">Other Income</div><div class="sv" style="color:#6ee7b7;">Rs. ${fmtShort(totOther)}</div></div>
+      </div>
+    </div>
+    <div class="card"><div class="card-title">Month-wise Breakdown</div>
+      <table><thead><tr>
+        <th>Month</th><th style="text-align:right;">Gross</th>
+        <th style="text-align:right;">Absent</th><th style="text-align:right;">TDS</th>
+        <th style="text-align:right;">Net Salary</th><th style="text-align:right;">Other</th>
+        <th style="text-align:right;">Total</th>
+      </tr></thead>
+      <tbody>${data.map(r=>`<tr>
+        <td><span class="month-badge">${MONTHS[r.month-1]}</span></td>
+        <td class="num">${fmtShort(r.gross)}</td>
+        <td class="num" style="color:var(--red);">${r.absentAmt>0?fmtShort(r.absentAmt):'-'}</td>
+        <td class="num" style="color:var(--amber);">${fmtShort(r.tdsAmt)}</td>
+        <td class="num">${fmtShort(r.netSalary)}</td>
+        <td class="num" style="color:var(--green);">${r.otherTotal>0?fmtShort(r.otherTotal):'-'}</td>
+        <td class="num" style="font-weight:700;color:var(--green);">${fmtShort(r.total)}</td>
+      </tr>`).join('')}
+      <tr style="background:var(--paper);font-weight:700;">
+        <td style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">Total</td>
+        <td class="num">${fmtShort(totGross)}</td>
+        <td class="num" style="color:var(--red);">${fmtShort(totAbsent)}</td>
+        <td class="num" style="color:var(--amber);">${fmtShort(totTDS)}</td>
+        <td class="num">${fmtShort(totNetSal)}</td>
+        <td class="num" style="color:var(--green);">${fmtShort(totOther)}</td>
+        <td class="num" style="color:var(--green);font-size:15px;">${fmtShort(totTotal)}</td>
+      </tr></tbody></table>
+    </div>
+    ${otherBreakdown}`;
+}
+</script>
+</body>
+</html>
